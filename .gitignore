@@ -1,0 +1,47 @@
+# --- Binaries & Build Artifacts ---
+*.exe
+*.out
+*.o
+*.a
+*.so
+*.dylib
+server          # Your compiled server binary
+build/
+dist/
+*.dSYM/         # macOS debug symbols
+
+# --- Certificates & Keys (NEVER commit these!) ---
+*.pem
+*.key
+certs/          # Certificate directory
+.env            # Environment variables (if used)
+
+# --- Editor & IDE Files ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+
+# --- OS Junk ---
+.DS_Store
+Thumbs.db
+*.un~
+
+# --- Logs & Debug Files ---
+*.log
+*.tmp
+*.core          # Core dumps
+valgrind-*.out
+
+# --- Dependency Directories ---
+deps/
+vendor/
+node_modules/   # If using JS tooling
+
+# --- Test Artifacts ---
+test-results/
+coverage/
+
+# --- Generated Files ---
+*.d             # Dependency files (from -MMD)
