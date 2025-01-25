@@ -11,9 +11,40 @@
 #include <sys/wait.h>  // Add for waitpid()
 #include <signal.h>    // Add for signal handling
 #include <dirent.h>  // For directory operations
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+
+SSL_CTX *ssl_ctx; // Global SSL context
+
+#define CERT_FILE "certs/cert.pem"
+#define KEY_FILE "certs/key.pem"
+
 
 #define PORT 8080
 #define BUFFER_SIZE 4096
+
+
+void init_openssl() {
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+    ssl_ctx = SSL_CTX_new(TLS_server_method());
+    
+    // Load certificate and key
+    if (SSL_CTX_use_certificate_file(ssl_ctx, CERT_FILE, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+    if (SSL_CTX_use_PrivateKey_file(ssl_ctx, KEY_FILE, SSL_FILETYPE_PEM) <= 0) {
+        ERR_print_errors_fp(stderr);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void cleanup_openssl() {
+    SSL_CTX_free(ssl_ctx);
+    EVP_cleanup();
+}
 
 int is_path_safe(const char *path) {
     // Check for path traversal attempts
@@ -61,7 +92,7 @@ const char* get_mime_type(const char *file_path) {
     return "text/plain";
 }
 
-void serve_error(int client_fd, int status_code, const char *status_text) {
+void serve_error(SSL *ssl, int status_code, const char *status_text) {
     char error_path[BUFFER_SIZE];
     snprintf(error_path, BUFFER_SIZE, "public/%d.html", status_code);
 
@@ -79,7 +110,7 @@ void serve_error(int client_fd, int status_code, const char *status_text) {
                           status_code, status_text, 
                           strlen(status_text) + 4,
                           status_code, status_text);
-        send(client_fd, response, len, 0);
+        SSL_write(ssl, response, len);
     } else {
         // Serve custom HTML error page
         struct stat file_stat;
@@ -90,21 +121,20 @@ void serve_error(int client_fd, int status_code, const char *status_text) {
                 "Content-Type: text/html\r\n"
                 "Content-Length: %lld\r\n\r\n", 
                 status_code, status_text, file_stat.st_size);
-        send(client_fd, headers, strlen(headers), 0);
-
+        SSL_write(ssl, headers, strlen(headers));
         char buffer[BUFFER_SIZE];
         ssize_t bytes_read;
         while ((bytes_read = read(file_fd, buffer, BUFFER_SIZE)) > 0) {
-            send(client_fd, buffer, bytes_read, 0);
+            SSL_write(ssl, buffer, bytes_read);
         }
         close(file_fd);
     }
 }
 
-void serve_directory_listing(int client_fd, const char *path) {
+void serve_directory_listing(SSL *ssl, const char *path) {
     DIR *dir = opendir(path);
     if (!dir) {
-        serve_error(client_fd, 500, "Internal Server Error");
+        serve_error(ssl, 500, "Internal Server Error");
         return;
     }
 
@@ -171,12 +201,12 @@ void serve_directory_listing(int client_fd, const char *path) {
         "Content-Type: text/html\r\n"
         "Content-Length: %zu\r\n\r\n",
         strlen(response));
-    send(client_fd, headers, strlen(headers), 0);
-    send(client_fd, response, strlen(response), 0);
+    SSL_write(ssl, headers, strlen(headers));
+    SSL_write(ssl, response, strlen(response));
 }
 
 // Serve a file based on the sanitized path
-void serve_file(int client_fd, const char *path) {
+void serve_file(SSL *ssl, const char *path) {
     char full_path[BUFFER_SIZE];
     snprintf(full_path, BUFFER_SIZE, "public%s", path);
 
@@ -192,7 +222,7 @@ void serve_file(int client_fd, const char *path) {
             strncat(full_path, "/index.html", BUFFER_SIZE - strlen(full_path) - 1);
         } else {
             // No index.html, show directory listing
-            serve_directory_listing(client_fd, full_path);
+            serve_directory_listing(ssl, full_path);
             return;
         }
     }
@@ -201,9 +231,9 @@ void serve_file(int client_fd, const char *path) {
     if (file_fd == -1) {
         perror("open failed");
         if (errno == ENOENT) {
-            serve_error(client_fd, 404, "Not Found");
+            serve_error(ssl, 404, "Not Found");
         } else {
-            serve_error(client_fd, 500, "Internal Server Error");
+            serve_error(ssl, 500, "Internal Server Error");
         }
         return;
     }
@@ -221,17 +251,52 @@ void serve_file(int client_fd, const char *path) {
         "Content-Length: %lld\r\n"
         "Content-Type: %s\r\n"
         "\r\n", file_size, mime_type);
-    send(client_fd, headers, strlen(headers), 0);
+    SSL_write(ssl, headers, strlen(headers));
 
     // Send file content
     char file_buffer[BUFFER_SIZE];
     ssize_t bytes_read;
 
     while ((bytes_read = read(file_fd, file_buffer, BUFFER_SIZE)) > 0) {
-        send(client_fd, file_buffer, bytes_read, 0);
+        SSL_write(ssl, file_buffer, bytes_read);
     }
 
     close(file_fd);
+}
+
+void handle_client(SSL *ssl) {
+    char buffer[BUFFER_SIZE] = {0};
+
+    // Read request using SSL
+    int bytes_read = SSL_read(ssl, buffer, BUFFER_SIZE - 1);
+    if (bytes_read <= 0) {
+        ERR_print_errors_fp(stderr);
+        return;
+    }
+    buffer[bytes_read] = '\0';
+    printf("Raw request:\n%s\n", buffer);
+
+    // Parse the request line
+    char method[16] = {0};
+    char path[BUFFER_SIZE] = {0};
+    if (parse_request_line(buffer, method, path) != 0) {
+        serve_error(ssl, 400, "Bad Request");
+        return;
+    }
+
+    if (!is_path_safe(path)) {
+        serve_error(ssl, 403, "Forbidden");
+        return;
+    }
+
+    if (strcmp(method, "GET") != 0) {
+        serve_error(ssl, 501, "Not Implemented");
+        return;
+    }
+
+    printf("[PID %d] Method: %s Path: %s\n", getpid(), method, path);
+    serve_file(ssl, path);
+    SSL_shutdown(ssl);
 }
 
 int main(void) {  // Added void
@@ -277,6 +342,8 @@ int main(void) {  // Added void
     // Set up signal handler for zombie process cleanup
     signal(SIGCHLD, SIG_IGN);
 
+    init_openssl(); 
+    
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         if (client_fd == -1) {
@@ -284,59 +351,36 @@ int main(void) {  // Added void
             continue;
         }
 
+        // Create SSL object
+        SSL *ssl = SSL_new(ssl_ctx);
+        SSL_set_fd(ssl, client_fd);
+
+        // Perform TLS handshake
+        if (SSL_accept(ssl) <= 0) {
+            ERR_print_errors_fp(stderr);
+            close(client_fd);
+            SSL_free(ssl);
+            continue;
+        }
+        
         pid_t pid = fork();
         if (pid == -1) {
             perror("fork failed");
             close(client_fd);
             continue;
         } else if (pid == 0) {  // Child process
-            close(server_fd);    // Child doesn't need the listener socket
-
-            // Read the client's request
-            ssize_t bytes_read = read(client_fd, buffer, BUFFER_SIZE - 1);
-            if (bytes_read < 0) {
-                perror("read failed");
-                close(client_fd);
-                exit(EXIT_FAILURE);
-            }
-            buffer[bytes_read] = '\0';
-            printf("Raw request:\n%s\n", buffer);
-
-            // Parse the request line
-            char method[16] = {0};
-            char path[BUFFER_SIZE] = {0};
-            if (parse_request_line(buffer, method, path) != 0) {
-                char *response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 15\r\n\r\nInvalid request";
-                send(client_fd, response, strlen(response), 0);
-                close(client_fd);
-                exit(EXIT_FAILURE);
-            }
-
-            // ...rest of request handling...
-            if (!is_path_safe(path)) {
-                char *response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 13\r\n\r\nInvalid path";
-                send(client_fd, response, strlen(response), 0);
-                close(client_fd);
-                exit(EXIT_FAILURE);
-            }
-
-            if (strcmp(method, "GET") != 0) {
-                char *response = "HTTP/1.1 501 Not Implemented\r\nContent-Length: 21\r\n\r\nMethod not supported";
-                send(client_fd, response, strlen(response), 0);
-                close(client_fd);
-                exit(EXIT_FAILURE);
-            }
-
-            printf("[PID %d] Method: %s Path: %s\n", getpid(), method, path);
-            serve_file(client_fd, path);
-            close(client_fd);
-            exit(EXIT_SUCCESS);
+            close(server_fd);  
+            handle_client(ssl);
+            SSL_free(ssl);
+            exit(0);
+          
         } else {  // Parent process
-            close(client_fd);  // Parent doesn't need the client socket
-            // Zombie cleanup is handled by the signal handler
+            close(client_fd);  
+            SSL_free(ssl);
         }
     }
 
+    cleanup_openssl();
     close(server_fd);
     return 0;
 }
