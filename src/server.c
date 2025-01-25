@@ -44,6 +44,20 @@ int parse_request_line(const char *request_line, char *method, char *path) {
     return 0;
 }
 
+const char* get_mime_type(const char *file_path) {
+    const char *dot = strrchr(file_path, '.');
+    if (!dot) return "text/plain";
+    
+    if (strcasecmp(dot, ".html") == 0) return "text/html";
+    if (strcasecmp(dot, ".css") == 0) return "text/css";
+    if (strcasecmp(dot, ".js") == 0) return "application/javascript";
+    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) return "image/jpeg";
+    if (strcasecmp(dot, ".png") == 0) return "image/png";
+    if (strcasecmp(dot, ".gif") == 0) return "image/gif";
+    
+    return "text/plain";
+}
+
 // Serve a file based on the sanitized path
 void serve_file(int client_fd, const char *path) {
     char full_path[BUFFER_SIZE];
@@ -78,11 +92,12 @@ void serve_file(int client_fd, const char *path) {
 
     // Send HTTP headers
     char headers[BUFFER_SIZE];
+    const char *mime_type = get_mime_type(full_path);
     snprintf(headers, BUFFER_SIZE, 
         "HTTP/1.1 200 OK\r\n"
-        "Content-Length: %lld\r\n"  // Changed from %ld to %lld
-        "Content-Type: text/html\r\n" // TODO: Add MIME type detection
-        "\r\n", file_size);
+        "Content-Length: %lld\r\n"
+        "Content-Type: %s\r\n"
+        "\r\n", file_size, mime_type);
     send(client_fd, headers, strlen(headers), 0);
 
     // Send file content
