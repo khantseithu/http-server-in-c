@@ -5,15 +5,16 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <ctype.h> 
-#include <sys/stat.h> // Added for stat()
-#include <fcntl.h>    // Added for open(), read()
-#include <errno.h>    // Added for errno
-#include <sys/wait.h>  // Add for waitpid()
-#include <signal.h>    // Add for signal handling
-#include <dirent.h>  // For directory operations
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <dirent.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-
+#include "server.h"
+#include "utils.h" // For is_path_safe, get_mime_type
 
 SSL_CTX *ssl_ctx; // Global SSL context
 
@@ -46,53 +47,25 @@ void cleanup_openssl() {
     EVP_cleanup();
 }
 
-int is_path_safe(const char *path) {
-    // Check for path traversal attempts
-    if (strstr(path, "..") != NULL) {
-        return 0;
-    }
-    // Ensure path starts with /
-    if (path[0] != '/') {
-        return 0;
-    }
-    return 1;
-}
-
-// Helper function to parse the HTTP request line (e.g., "GET / HTTP/1.1")
-int parse_request_line(const char *request_line, char *method, char *path) {
-    // Copy the request line to avoid modifying the original buffer
+// Parse the HTTP request line (e.g., "GET / HTTP/1.1")
+static int parse_request_line(const char *request_line, char *method, char *path) {
+    // ...existing code...
     char line_copy[BUFFER_SIZE];
     strncpy(line_copy, request_line, BUFFER_SIZE);
-    line_copy[BUFFER_SIZE - 1] = '\0'; // Ensure null-termination
+    line_copy[BUFFER_SIZE-1] = '\0';
 
-    // Split the line into method, path, and HTTP version
     char *token = strtok(line_copy, " ");
-    if (token == NULL) return -1; // Malformed
+    if (!token) return -1;
     strcpy(method, token);
 
     token = strtok(NULL, " ");
-    if (token == NULL) return -1;
+    if (!token) return -1;
     strcpy(path, token);
 
-    // Optional: Validate HTTP version (we'll ignore for now)
     return 0;
 }
 
-const char* get_mime_type(const char *file_path) {
-    const char *dot = strrchr(file_path, '.');
-    if (!dot) return "text/plain";
-    
-    if (strcasecmp(dot, ".html") == 0) return "text/html";
-    if (strcasecmp(dot, ".css") == 0) return "text/css";
-    if (strcasecmp(dot, ".js") == 0) return "application/javascript";
-    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0) return "image/jpeg";
-    if (strcasecmp(dot, ".png") == 0) return "image/png";
-    if (strcasecmp(dot, ".gif") == 0) return "image/gif";
-    
-    return "text/plain";
-}
-
-void serve_error(SSL *ssl, int status_code, const char *status_text) {
+static void serve_error(SSL *ssl, int status_code, const char *status_text) {
     char error_path[BUFFER_SIZE];
     snprintf(error_path, BUFFER_SIZE, "public/%d.html", status_code);
 
@@ -131,7 +104,7 @@ void serve_error(SSL *ssl, int status_code, const char *status_text) {
     }
 }
 
-void serve_directory_listing(SSL *ssl, const char *path) {
+static void serve_directory_listing(SSL *ssl, const char *path) {
     DIR *dir = opendir(path);
     if (!dir) {
         serve_error(ssl, 500, "Internal Server Error");
@@ -206,7 +179,7 @@ void serve_directory_listing(SSL *ssl, const char *path) {
 }
 
 // Serve a file based on the sanitized path
-void serve_file(SSL *ssl, const char *path) {
+static void serve_file(SSL *ssl, const char *path) {
     char full_path[BUFFER_SIZE];
     snprintf(full_path, BUFFER_SIZE, "public%s", path);
 
@@ -267,34 +240,30 @@ void serve_file(SSL *ssl, const char *path) {
 void handle_client(SSL *ssl) {
     char buffer[BUFFER_SIZE] = {0};
 
-    // Read request using SSL
-    int bytes_read = SSL_read(ssl, buffer, BUFFER_SIZE - 1);
+    // Read request via SSL
+    int bytes_read = SSL_read(ssl, buffer, BUFFER_SIZE-1);
     if (bytes_read <= 0) {
         ERR_print_errors_fp(stderr);
         return;
     }
     buffer[bytes_read] = '\0';
-    printf("Raw request:\n%s\n", buffer);
 
-    // Parse the request line
+    // Parse
     char method[16] = {0};
     char path[BUFFER_SIZE] = {0};
     if (parse_request_line(buffer, method, path) != 0) {
         serve_error(ssl, 400, "Bad Request");
         return;
     }
-
     if (!is_path_safe(path)) {
         serve_error(ssl, 403, "Forbidden");
         return;
     }
-
     if (strcmp(method, "GET") != 0) {
         serve_error(ssl, 501, "Not Implemented");
         return;
     }
 
-    printf("[PID %d] Method: %s Path: %s\n", getpid(), method, path);
     serve_file(ssl, path);
     SSL_shutdown(ssl);
 }

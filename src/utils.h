@@ -1,7 +1,12 @@
-#include <string.h>
+#ifndef UTILS_H
+#define UTILS_H
+
 #include <stdbool.h>
-#include <stdio.h>
-#include "utils.h"
+
+
+bool is_path_safe(const char *path);
+const char *get_mime_type(const char *path);
+
 
 // Check if path is safe (no directory traversal)
 bool is_path_safe(const char *path) {
@@ -26,3 +31,5 @@ const char *get_mime_type(const char *path) {
     if (strcmp(dot, ".jpg") == 0) return "image/jpeg";
     return "application/octet-stream";
 }
+
+#endif
