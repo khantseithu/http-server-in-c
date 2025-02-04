@@ -5,4 +5,4 @@ INCLUDES = -I/opt/homebrew/opt/openssl/include
 LDFLAGS = -L/opt/homebrew/opt/openssl/lib -lssl -lcrypto
 
 build:
-	$(CC) $(CFLAGS) $(INCLUDES) src/server.c -o server $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) src/server.c src/utils.c -o server $(LDFLAGS)

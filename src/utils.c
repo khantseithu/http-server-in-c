@@ -1,6 +1,8 @@
+#include <ctype.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "utils.h"
 
 // Check if path is safe (no directory traversal)
@@ -25,4 +27,28 @@ const char *get_mime_type(const char *path) {
     if (strcmp(dot, ".png") == 0) return "image/png";
     if (strcmp(dot, ".jpg") == 0) return "image/jpeg";
     return "application/octet-stream";
+}
+
+void urldecode(const char *src, char *dest, size_t dest_size) {
+    char *p = dest;
+    const char *end = dest + dest_size - 1; // Reserve space for null terminator
+
+    while (*src && p < end) {
+        if (*src == '%') {
+            if (src + 2 < end && isxdigit(src[1]) && isxdigit(src[2])) {
+                char hex[3] = { src[1], src[2], '\0' };
+                *p++ = (char)strtol(hex, NULL, 16);
+                src += 3;
+            } else {
+                // Invalid encoding, copy as is
+                *p++ = *src++;
+            }
+        } else if (*src == '+') {
+            *p++ = ' ';
+            src++;
+        } else {
+            *p++ = *src++;
+        }
+    }
+    *p = '\0'; // Null-terminate the destination string
 }
