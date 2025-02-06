@@ -14,7 +14,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "server.h"
-#include "utils.h" // For is_path_safe, get_mime_type
+#include "utils.h" // For is_path_safe, get_mime_type, urldecode
 
 SSL_CTX *ssl_ctx; // Global SSL context
 
@@ -26,7 +26,7 @@ SSL_CTX *ssl_ctx; // Global SSL context
 #define BUFFER_SIZE 4096
 
 
-void init_openssl() {
+void init_openssl(void) {
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
     ssl_ctx = SSL_CTX_new(TLS_server_method());
@@ -42,7 +42,7 @@ void init_openssl() {
     }
 }
 
-void cleanup_openssl() {
+void cleanup_openssl(void) {
     SSL_CTX_free(ssl_ctx);
     EVP_cleanup();
 }
