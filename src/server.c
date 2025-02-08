@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include "debug.h"
 #include "server.h"
 #include "utils.h" // For is_path_safe, get_mime_type, urldecode
 
@@ -49,18 +50,11 @@ void cleanup_openssl(void) {
 
 // Parse the HTTP request line (e.g., "GET / HTTP/1.1")
 static int parse_request_line(const char *request_line, char *method, char *path) {
-    // ...existing code...
-    char line_copy[BUFFER_SIZE];
-    strncpy(line_copy, request_line, BUFFER_SIZE);
-    line_copy[BUFFER_SIZE-1] = '\0';
-
-    char *token = strtok(line_copy, " ");
-    if (!token) return -1;
-    strcpy(method, token);
-
-    token = strtok(NULL, " ");
-    if (!token) return -1;
-    strcpy(path, token);
+    if (sscanf(request_line, "%s %s", method, path) != 2)
+        return -1;
+    
+    urldecode(path, path, BUFFER_SIZE);
+    DEBUG_PRINT("parse_request_line url: %s\n", path);
 
     return 0;
 }
@@ -92,7 +86,7 @@ static void serve_error(SSL *ssl, int status_code, const char *status_text) {
         snprintf(headers, BUFFER_SIZE, 
                 "HTTP/1.1 %d %s\r\n"
                 "Content-Type: text/html\r\n"
-                "Content-Length: %lld\r\n\r\n", 
+                "Content-Length: %ld\r\n\r\n", 
                 status_code, status_text, file_stat.st_size);
         SSL_write(ssl, headers, strlen(headers));
         char buffer[BUFFER_SIZE];
@@ -180,6 +174,9 @@ static void serve_directory_listing(SSL *ssl, const char *path) {
 
 // Serve a file based on the sanitized path
 static void serve_file(SSL *ssl, const char *path) {
+
+    DEBUG_PRINT("serve_file path: %s\n", path);
+
     char full_path[BUFFER_SIZE];
     snprintf(full_path, BUFFER_SIZE, "public%s", path);
 
@@ -188,7 +185,7 @@ static void serve_file(SSL *ssl, const char *path) {
     if (stat(full_path, &path_stat) == 0 && S_ISDIR(path_stat.st_mode)) {
         // Look for index.html
         char index_path[BUFFER_SIZE];
-        snprintf(index_path, BUFFER_SIZE, "%s/index.html", full_path);
+        snprintf(index_path, BUFFER_SIZE, "%.*s/index.html", 4096-12, full_path);
         
         if (access(index_path, F_OK) != -1) {
             // index.html exists, serve it
@@ -199,6 +196,8 @@ static void serve_file(SSL *ssl, const char *path) {
             return;
         }
     }
+    
+    DEBUG_PRINT("serve_file open: %s\n", full_path);
     
     int file_fd = open(full_path, O_RDONLY);
     if (file_fd == -1) {
@@ -221,7 +220,7 @@ static void serve_file(SSL *ssl, const char *path) {
     const char *mime_type = get_mime_type(full_path);
     snprintf(headers, BUFFER_SIZE, 
         "HTTP/1.1 200 OK\r\n"
-        "Content-Length: %lld\r\n"
+        "Content-Length: %ld\r\n"
         "Content-Type: %s\r\n"
         "\r\n", file_size, mime_type);
     SSL_write(ssl, headers, strlen(headers));
@@ -251,16 +250,20 @@ void handle_client(SSL *ssl) {
     // Parse
     char method[16] = {0};
     char path[BUFFER_SIZE] = {0};
+
     if (parse_request_line(buffer, method, path) != 0) {
         serve_error(ssl, 400, "Bad Request");
+        SSL_shutdown(ssl);
         return;
     }
     if (!is_path_safe(path)) {
         serve_error(ssl, 403, "Forbidden");
+        SSL_shutdown(ssl);
         return;
     }
     if (strcmp(method, "GET") != 0) {
         serve_error(ssl, 501, "Not Implemented");
+        SSL_shutdown(ssl);
         return;
     }
 
@@ -272,7 +275,7 @@ int main(void) {  // Added void
     int server_fd, client_fd;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
-    char buffer[BUFFER_SIZE] = {0};
+    //char buffer[BUFFER_SIZE] = {0};
 
     // 1. Create socket
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
@@ -287,6 +290,7 @@ int main(void) {  // Added void
         close(server_fd);
         exit(EXIT_FAILURE);
     }
+
 
     // 2. Bind to port 8080
     address.sin_family = AF_INET;
@@ -315,37 +319,46 @@ int main(void) {  // Added void
     
     while (1) {
         client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        DEBUG_PRINT("accept\n");
         if (client_fd == -1) {
             perror("accept failed");
             continue;
         }
 
-        // Create SSL object
-        SSL *ssl = SSL_new(ssl_ctx);
-        SSL_set_fd(ssl, client_fd);
-
-        // Perform TLS handshake
-        if (SSL_accept(ssl) <= 0) {
-            ERR_print_errors_fp(stderr);
-            close(client_fd);
-            SSL_free(ssl);
-            continue;
-        }
-        
         pid_t pid = fork();
         if (pid == -1) {
             perror("fork failed");
             close(client_fd);
             continue;
         } else if (pid == 0) {  // Child process
+            DEBUG_PRINT("Child process (PID: %d) started by parent process (PID: %d)\n", getpid(), getppid());
             close(server_fd);  
-            handle_client(ssl);
+
+            struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
+            
+            if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+                perror("setsockopt SO_RCVTIMEO");
+                exit(EXIT_FAILURE);
+            }
+            
+            // Create SSL object
+            SSL *ssl = SSL_new(ssl_ctx);
+            SSL_set_fd(ssl, client_fd);
+
+            // Perform TLS handshake
+            if (SSL_accept(ssl) <= 0) {
+                ERR_print_errors_fp(stderr);
+            } else {
+                handle_client(ssl);
+            }
+
             SSL_free(ssl);
+            close(client_fd);
+            DEBUG_PRINT("Child process (PID: %d) is exiting\n", getpid());
             exit(0);
           
         } else {  // Parent process
             close(client_fd);  
-            SSL_free(ssl);
         }
     }
 
