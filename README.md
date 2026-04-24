@@ -24,7 +24,7 @@ A lightweight, production-ready HTTP/1.1 server written in C with TLS/SSL suppor
 
 ```bash
 # Clone repository
-git clone https://github.com/khantsithu/http-server-in-c.git
+git clone https://github.com/khantseithu/http-server-in-c.git
 cd http-server-in-c
 
 # Install OpenSSL (macOS/Homebrew)
